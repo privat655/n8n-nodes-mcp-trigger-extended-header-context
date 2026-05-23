@@ -1,0 +1,77 @@
+{
+  "name": "n8n-nodes-mcp-trigger-extended-header-context",
+  "version": "0.1.0",
+  "private": false,
+  "packageManager": "npm@10.9.4",
+  "description": "n8n MCP Server Trigger variant that injects X-MCP-* request headers into tool-call arguments.",
+  "license": "SEE LICENSE IN LICENSE.md",
+  "keywords": [
+    "n8n-community-node-package",
+    "n8n",
+    "mcp",
+    "model-context-protocol",
+    "headers"
+  ],
+  "author": {
+    "name": "MCP Trigger Extended Header Context Maintainers"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/privat655/n8n-nodes-mcp-trigger-extended-header-context.git"
+  },
+  "engines": {
+    "node": ">=22 <23",
+    "npm": ">=10"
+  },
+  "scripts": {
+    "build": "n8n-node build",
+    "build:watch": "tsc --watch",
+    "deploy:npm-public": "node scripts/npm_public_deploy.js",
+    "dev": "n8n-node dev",
+    "git:sync": "python3 scripts/git_github_sync.py",
+    "git:sync:status": "python3 scripts/git_github_sync.py --status",
+    "lint": "n8n-node lint",
+    "lint:fix": "n8n-node lint --fix",
+    "release": "n8n-node release",
+    "prepublishOnly": "n8n-node prerelease"
+  },
+  "files": [
+    "dist",
+    "LICENSE.md",
+    "NOTICE.md"
+  ],
+  "n8n": {
+    "n8nNodesApiVersion": 1,
+    "strict": false,
+    "credentials": [
+      "dist/credentials/McpTriggerExtendedHeaderContextBearerAuthApi.credentials.js",
+      "dist/credentials/McpTriggerExtendedHeaderContextHeaderAuthApi.credentials.js"
+    ],
+    "nodes": [
+      "dist/nodes/McpTriggerExtendedHeaderContext/McpTriggerExtendedHeaderContext.node.js"
+    ]
+  },
+  "peerDependencies": {
+    "n8n-workflow": "*"
+  },
+  "devDependencies": {
+    "@n8n/node-cli": "0.31.0",
+    "@types/express": "5.0.6",
+    "@types/json-schema": "7.0.15",
+    "@types/node": "22.19.19",
+    "eslint": "9.39.4",
+    "n8n-workflow": "2.21.1",
+    "prettier": "3.8.3",
+    "release-it": "20.0.1",
+    "typescript": "5.9.3"
+  },
+  "dependencies": {
+    "@langchain/core": "1.1.48",
+    "@modelcontextprotocol/sdk": "1.26.0",
+    "@n8n/errors": "0.8.0",
+    "@n8n/json-schema-to-zod": "1.9.0",
+    "generate-schema": "2.6.0",
+    "zod": "3.25.76",
+    "zod-to-json-schema": "3.23.3"
+  }
+}
