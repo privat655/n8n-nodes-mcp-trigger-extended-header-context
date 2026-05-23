@@ -26,10 +26,7 @@
   "scripts": {
     "build": "n8n-node build",
     "build:watch": "tsc --watch",
-    "deploy:npm-public": "node scripts/npm_public_deploy.js",
     "dev": "n8n-node dev",
-    "git:sync": "python3 scripts/git_github_sync.py",
-    "git:sync:status": "python3 scripts/git_github_sync.py --status",
     "lint": "n8n-node lint",
     "lint:fix": "n8n-node lint --fix",
     "release": "n8n-node release",
