@@ -192,10 +192,11 @@ function getClientFacingInputSchema(tool: Tool): ClientInputSchema {
 	});
 	if (!isRecord(schema)) return { type: 'object', properties: {} };
 
+	const jsonSchema = schema as JsonObjectSchema;
 	const options = getMcpToolSchemaOptions(tool);
-	const properties = isRecord(schema.properties) ? schema.properties : undefined;
+	const properties = isRecord(jsonSchema.properties) ? jsonSchema.properties : undefined;
 	const hiddenPropertyNames = new Set<string>();
-	const nextSchema: ClientInputSchema = { ...schema, type: 'object' };
+	const nextSchema: ClientInputSchema = { ...jsonSchema, type: 'object' };
 
 	if (properties && !options.exposeMcpHeaderParameters) {
 		const nextProperties = { ...properties };
@@ -208,10 +209,10 @@ function getClientFacingInputSchema(tool: Tool): ClientInputSchema {
 		nextSchema.properties = nextProperties;
 	}
 
-	if (Array.isArray(schema.required)) {
+	if (Array.isArray(jsonSchema.required)) {
 		const optionalParameterNames = new Set(options.optionalParameterNames);
-		const required = schema.required.filter(
-			(name): name is string =>
+		const required = jsonSchema.required.filter(
+			(name: unknown): name is string =>
 				typeof name === 'string' &&
 				!optionalParameterNames.has(name) &&
 				!hiddenPropertyNames.has(name),
