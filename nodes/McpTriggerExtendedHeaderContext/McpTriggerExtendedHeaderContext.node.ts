@@ -1,4 +1,9 @@
-import { McpServer, MCP_LIST_TOOLS_REQUEST_MARKER } from './McpServer';
+import {
+	McpServer,
+	MCP_LIST_TOOLS_REQUEST_MARKER,
+	prepareMcpTools,
+	type McpToolSchemaOptions,
+} from './McpServer';
 import type { CompressionResponse } from './transport';
 import {
 	WebhookAuthorizationError,
@@ -11,6 +16,28 @@ import { getConnectedTools } from '../../utils/helpers';
 
 const MCP_SSE_SETUP_PATH = 'sse';
 const MCP_SSE_MESSAGES_PATH = 'messages';
+
+function parseOptionalParameterNames(value: unknown): string[] {
+	if (typeof value !== 'string') return [];
+
+	return Array.from(
+		new Set(
+			value
+				.split(/[\n,]/)
+				.map((name) => name.trim())
+				.filter((name) => name.length > 0),
+		),
+	);
+}
+
+async function getPreparedConnectedTools(context: IWebhookFunctions) {
+	const options: McpToolSchemaOptions = {
+		optionalParameterNames: parseOptionalParameterNames(context.getNodeParameter('optionalParameters')),
+		exposeMcpHeaderParameters: context.getNodeParameter('exposeMcpHeaderParameters') === true,
+	};
+
+	return prepareMcpTools(await getConnectedTools(context, true), options);
+}
 
 export class McpTriggerExtendedHeaderContext extends Node {
 	description: INodeTypeDescription = {
@@ -109,6 +136,26 @@ export class McpTriggerExtendedHeaderContext extends Node {
 				required: true,
 				description: 'The base path for this MCP server',
 			},
+			{
+				displayName: 'Expose X-MCP Parameters to Clients',
+				name: 'exposeMcpHeaderParameters',
+				type: 'boolean',
+				default: false,
+				description:
+					'Whether to include x-mcp-* parameters in the MCP tool schemas returned to clients',
+			},
+			{
+				displayName: 'Optional Parameters',
+				name: 'optionalParameters',
+				type: 'string',
+				default: '',
+				placeholder: 'customerId, x-mcp-userid',
+				description:
+					'Comma-separated or newline-separated parameter names to treat as optional when exposing and validating MCP tool calls',
+				typeOptions: {
+					rows: 3,
+				},
+			},
 		],
 		webhooks: [
 			{
@@ -170,7 +217,7 @@ export class McpTriggerExtendedHeaderContext extends Node {
 					? req.path.replace(new RegExp(`/${MCP_SSE_SETUP_PATH}$`), `/${MCP_SSE_MESSAGES_PATH}`)
 					: req.path;
 
-			const connectedTools = await getConnectedTools(context, true);
+			const connectedTools = await getPreparedConnectedTools(context);
 			await mcpServer.handleSetupRequest(req, resp, serverName, postUrl, connectedTools);
 
 			return { noWebhookResponse: true };
@@ -183,7 +230,7 @@ export class McpTriggerExtendedHeaderContext extends Node {
 				context.logger.debug('MCP POST request received for existing session');
 
 				if (sessionId) {
-					const connectedTools = await getConnectedTools(context, true);
+					const connectedTools = await getPreparedConnectedTools(context);
 					const { wasToolCall, toolCallInfo, messageId, relaySessionId, needsListToolsRelay } =
 						await mcpServer.handlePostMessage(req, resp, connectedTools, serverName);
 
@@ -206,7 +253,7 @@ export class McpTriggerExtendedHeaderContext extends Node {
 						return { noWebhookResponse: true, workflowData: [[{ json: workflowData }]] };
 					}
 				} else {
-					const connectedTools = await getConnectedTools(context, true);
+					const connectedTools = await getPreparedConnectedTools(context);
 					await mcpServer.handleStreamableHttpSetup(req, resp, serverName, connectedTools);
 				}
 			}
