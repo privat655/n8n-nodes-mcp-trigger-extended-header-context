@@ -131,7 +131,7 @@ export class McpTriggerExtendedHeaderContext extends Node {
 				displayName: 'Path',
 				name: 'path',
 				type: 'string',
-				default: '',
+				default: '={{$webhookId}}',
 				placeholder: 'webhook',
 				required: true,
 				description: 'The base path for this MCP server',
