@@ -22,7 +22,7 @@ export async function validateWebhookAuthentication(
 	ctx: IWebhookFunctions,
 	authPropertyName: string,
 ) {
-	const authentication = ctx.getNodeParameter(authPropertyName) as string;
+	const authentication = ctx.getNodeParameter(authPropertyName, 'none') as string;
 	if (authentication === 'none') return;
 
 	const headers = ctx.getHeaderData();

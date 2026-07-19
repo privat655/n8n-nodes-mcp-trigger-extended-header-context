@@ -6,6 +6,8 @@ It stays close to n8n's official MCP Server Trigger and adds one behavior: inbou
 
 You can mark selected tool parameters as optional for MCP clients so omitted values do not fail tool validation. Header-backed `x-mcp-*` parameters are hidden from MCP clients by default while still being injected from inbound request headers on the server.
 
+Version `0.1.7` tracks the MCP Server Trigger from `n8n@2.30.7`, which is identical to the trigger shipped with n8n `2.30.5`. It includes upstream MCP error signaling and idle Streamable HTTP session cleanup.
+
 Install in n8n Community Nodes with package name `n8n-nodes-mcp-trigger-extended-header-context`.
 
 ## Subworkflows

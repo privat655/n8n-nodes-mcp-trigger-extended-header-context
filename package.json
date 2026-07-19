@@ -1,6 +1,6 @@
 {
   "name": "n8n-nodes-mcp-trigger-extended-header-context",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "private": false,
   "packageManager": "npm@10.9.4",
   "description": "n8n MCP Server Trigger variant that injects X-MCP-* request headers into tool-call arguments.",
@@ -30,12 +30,14 @@
     "lint": "n8n-node lint",
     "lint:fix": "n8n-node lint --fix",
     "release": "n8n-node release",
+    "test": "npm run build && node --test test/*.test.js",
     "prepublishOnly": "n8n-node prerelease"
   },
   "files": [
     "dist",
     "LICENSE.md",
-    "NOTICE.md"
+    "NOTICE.md",
+    "UPSTREAM.md"
   ],
   "n8n": {
     "n8nNodesApiVersion": 1,

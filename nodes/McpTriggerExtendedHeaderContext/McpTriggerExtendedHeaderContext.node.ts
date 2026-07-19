@@ -1,9 +1,8 @@
 import {
 	McpServer,
 	MCP_LIST_TOOLS_REQUEST_MARKER,
-	prepareMcpTools,
-	type McpToolSchemaOptions,
 } from './McpServer';
+import { prepareMcpTools, type McpToolSchemaOptions } from './McpToolAdapter';
 import type { CompressionResponse } from './transport';
 import {
 	WebhookAuthorizationError,
@@ -239,7 +238,10 @@ export class McpTriggerExtendedHeaderContext extends Node {
 							...(toolCallInfo && { mcpToolCall: toolCallInfo }),
 							...(messageId && { mcpMessageId: messageId }),
 						};
-						return { noWebhookResponse: true, workflowData: [[{ json: workflowData }]] };
+						return {
+							noWebhookResponse: true,
+							workflowData: [[{ json: workflowData }]],
+						};
 					}
 
 					if (needsListToolsRelay && relaySessionId && messageId) {
@@ -250,7 +252,10 @@ export class McpTriggerExtendedHeaderContext extends Node {
 								marker: MCP_LIST_TOOLS_REQUEST_MARKER,
 							},
 						};
-						return { noWebhookResponse: true, workflowData: [[{ json: workflowData }]] };
+						return {
+							noWebhookResponse: true,
+							workflowData: [[{ json: workflowData }]],
+						};
 					}
 				} else {
 					const connectedTools = await getPreparedConnectedTools(context);

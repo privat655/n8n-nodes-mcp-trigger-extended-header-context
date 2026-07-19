@@ -12,12 +12,12 @@ import type * as express from 'express';
 import type { IncomingMessage } from 'http';
 import type { Logger } from 'n8n-workflow';
 import { jsonParse, OperationalError } from 'n8n-workflow';
-import { zodToJsonSchema } from 'zod-to-json-schema';
 
 import { ExecutionCoordinator } from './execution/ExecutionCoordinator';
 import type { ExecutionStrategy } from './execution/ExecutionStrategy';
 import { PendingCallsManager } from './execution/PendingCallsManager';
 import { QueuedExecutionStrategy } from './execution/QueuedExecutionStrategy';
+import { getClientFacingInputSchema, mergeMcpHeaderArguments } from './McpToolAdapter';
 import { MessageFormatter } from './protocol/MessageFormatter';
 import { MessageParser } from './protocol/MessageParser';
 import type { McpToolCallInfo } from './protocol/types';
@@ -29,6 +29,14 @@ import type { SSETransport } from './transport/SSETransport';
 import { StreamableHttpTransport } from './transport/StreamableHttpTransport';
 import type { CompressionResponse, McpTransport } from './transport/Transport';
 import { TransportFactory } from './transport/TransportFactory';
+
+const DEFAULT_SESSION_IDLE_TTL_MS = 3_600_000;
+const DEFAULT_SESSION_SWEEP_INTERVAL_MS = 300_000;
+
+function readPositiveInteger(name: string, fallback: number): number {
+	const value = Number(process.env[name]);
+	return Number.isInteger(value) && value > 0 ? value : fallback;
+}
 
 export interface HandlePostResult {
 	wasToolCall: boolean;
@@ -45,235 +53,6 @@ interface PendingResponse {
 	createdAt: Date;
 }
 
-type HeaderMap = Record<string, string | string[] | undefined>;
-type JsonObjectSchema = {
-	type?: unknown;
-	properties?: unknown;
-	required?: unknown;
-	[key: string]: unknown;
-};
-type ClientInputSchema = {
-	type: 'object';
-	properties?: Record<string, unknown>;
-	required?: string[];
-	[key: string]: unknown;
-};
-type ZodObjectLike = {
-	shape?: unknown;
-	_def?: { shape?: unknown };
-	partial?: unknown;
-};
-
-const MCP_HEADER_PREFIX = 'x-mcp-';
-export const MCP_TOOL_SCHEMA_OPTIONS_METADATA_KEY = 'mcpTriggerExtendedHeaderContext.schemaOptions';
-
-export interface McpToolSchemaOptions {
-	optionalParameterNames?: string[];
-	exposeMcpHeaderParameters?: boolean;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function normalizeMcpToolSchemaOptions(options?: McpToolSchemaOptions): Required<McpToolSchemaOptions> {
-	return {
-		optionalParameterNames: Array.from(new Set(options?.optionalParameterNames ?? [])),
-		exposeMcpHeaderParameters: options?.exposeMcpHeaderParameters === true,
-	};
-}
-
-function getMcpToolSchemaOptions(tool: Tool): Required<McpToolSchemaOptions> {
-	const metadata = isRecord(tool.metadata) ? tool.metadata : {};
-	const options = metadata[MCP_TOOL_SCHEMA_OPTIONS_METADATA_KEY];
-	if (!isRecord(options)) return normalizeMcpToolSchemaOptions();
-
-	return normalizeMcpToolSchemaOptions({
-		optionalParameterNames: Array.isArray(options.optionalParameterNames)
-			? options.optionalParameterNames.filter((name): name is string => typeof name === 'string')
-			: [],
-		exposeMcpHeaderParameters: options.exposeMcpHeaderParameters === true,
-	});
-}
-
-function getZodObjectShape(schema: unknown): Record<string, unknown> | undefined {
-	if (!isRecord(schema)) return undefined;
-
-	const candidate = schema as ZodObjectLike;
-	const shape = typeof candidate.shape === 'function' ? candidate.shape() : candidate.shape;
-	if (isRecord(shape)) return shape;
-
-	const defShape = candidate._def?.shape;
-	const resolvedDefShape = typeof defShape === 'function' ? defShape() : defShape;
-	return isRecord(resolvedDefShape) ? resolvedDefShape : undefined;
-}
-
-function relaxZodObjectSchema(schema: unknown, optionalParameterNames: Set<string>): unknown {
-	const shape = getZodObjectShape(schema);
-	if (!shape || !isRecord(schema)) return schema;
-
-	const mask = Object.fromEntries(
-		Object.keys(shape)
-			.filter((name) => optionalParameterNames.has(name))
-			.map((name) => [name, true]),
-	);
-	if (Object.keys(mask).length === 0) return schema;
-
-	const partial = (schema as ZodObjectLike).partial;
-	if (typeof partial !== 'function') return schema;
-
-	return partial.call(schema, mask);
-}
-
-function relaxJsonObjectSchema(schema: unknown, optionalParameterNames: Set<string>): unknown {
-	if (!isRecord(schema)) return schema;
-
-	const required = Array.isArray(schema.required)
-		? schema.required.filter((name): name is string => typeof name === 'string')
-		: [];
-	if (required.length === 0) return schema;
-
-	const nextRequired = required.filter((name) => !optionalParameterNames.has(name));
-	if (nextRequired.length === required.length) return schema;
-
-	const nextSchema: JsonObjectSchema = { ...schema };
-	if (nextRequired.length > 0) {
-		nextSchema.required = nextRequired;
-	} else {
-		delete nextSchema.required;
-	}
-
-	return nextSchema;
-}
-
-function relaxToolSchemaParameters(schema: unknown, optionalParameterNames: string[]): unknown {
-	if (optionalParameterNames.length === 0) return schema;
-
-	const optionalParameterNameSet = new Set(optionalParameterNames);
-	const relaxedZodSchema = relaxZodObjectSchema(schema, optionalParameterNameSet);
-	if (relaxedZodSchema !== schema) return relaxedZodSchema;
-
-	return relaxJsonObjectSchema(schema, optionalParameterNameSet);
-}
-
-function cloneTool(tool: Tool): Tool {
-	const clonedTool = Object.create(Object.getPrototypeOf(tool)) as Tool;
-	Object.defineProperties(clonedTool, Object.getOwnPropertyDescriptors(tool));
-	return clonedTool;
-}
-
-export function prepareMcpTools(tools: Tool[], options?: McpToolSchemaOptions): Tool[] {
-	const schemaOptions = normalizeMcpToolSchemaOptions(options);
-	const shouldAttachOptions =
-		schemaOptions.optionalParameterNames.length > 0 || schemaOptions.exposeMcpHeaderParameters;
-	if (!shouldAttachOptions) return tools;
-
-	return tools.map((tool) => {
-		const clonedTool = cloneTool(tool);
-		const metadata = isRecord(tool.metadata) ? tool.metadata : {};
-
-		clonedTool.schema = relaxToolSchemaParameters(
-			tool.schema,
-			schemaOptions.optionalParameterNames,
-		) as typeof tool.schema;
-		clonedTool.metadata = {
-			...metadata,
-			[MCP_TOOL_SCHEMA_OPTIONS_METADATA_KEY]: schemaOptions,
-		};
-
-		return clonedTool;
-	});
-}
-
-function getClientFacingInputSchema(tool: Tool): ClientInputSchema {
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-argument
-	const schema = zodToJsonSchema(tool.schema as any, {
-		removeAdditionalStrategy: 'strict',
-	});
-	if (!isRecord(schema)) return { type: 'object', properties: {} };
-
-	const jsonSchema = schema as JsonObjectSchema;
-	const options = getMcpToolSchemaOptions(tool);
-	const properties = isRecord(jsonSchema.properties) ? jsonSchema.properties : undefined;
-	const required = Array.isArray(jsonSchema.required)
-		? jsonSchema.required.filter((name: unknown): name is string => typeof name === 'string')
-		: undefined;
-	const hiddenPropertyNames = new Set<string>();
-	const nextSchema: ClientInputSchema = { ...jsonSchema, type: 'object', properties, required };
-
-	if (properties && !options.exposeMcpHeaderParameters) {
-		const nextProperties = { ...properties };
-		for (const name of Object.keys(nextProperties)) {
-			if (name.toLowerCase().startsWith(MCP_HEADER_PREFIX)) {
-				hiddenPropertyNames.add(name);
-				delete nextProperties[name];
-			}
-		}
-		nextSchema.properties = nextProperties;
-	}
-
-	if (required) {
-		const optionalParameterNames = new Set(options.optionalParameterNames);
-		const clientRequired = required.filter(
-			(name) => !optionalParameterNames.has(name) && !hiddenPropertyNames.has(name),
-		);
-
-		if (clientRequired.length > 0) {
-			nextSchema.required = clientRequired;
-		} else {
-			delete nextSchema.required;
-		}
-	}
-
-	return nextSchema;
-}
-
-function extractMcpHeaderArguments(headers?: HeaderMap): Record<string, string> {
-	const headerArguments: Record<string, string> = {};
-
-	for (const [name, value] of Object.entries(headers ?? {})) {
-		const key = name.toLowerCase();
-		if (!key.startsWith(MCP_HEADER_PREFIX) || key.length === MCP_HEADER_PREFIX.length) continue;
-		if (value === undefined) continue;
-
-		headerArguments[key] = Array.isArray(value) ? value.join(', ') : value;
-	}
-
-	return headerArguments;
-}
-
-function getToolArgumentNames(tool: Tool): Set<string> {
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-argument
-	const schema = zodToJsonSchema(tool.schema as any, {
-		removeAdditionalStrategy: 'strict',
-	});
-	if (typeof schema !== 'object' || schema === null) return new Set();
-
-	const properties = (schema as { properties?: unknown }).properties;
-	if (typeof properties !== 'object' || properties === null || Array.isArray(properties)) {
-		return new Set();
-	}
-
-	return new Set(Object.keys(properties));
-}
-
-function mergeMcpHeaderArguments(
-	args: Record<string, unknown>,
-	headers: HeaderMap | undefined,
-	tool: Tool,
-): Record<string, unknown> {
-	const headerArguments = extractMcpHeaderArguments(headers);
-	if (Object.keys(headerArguments).length === 0) return args;
-
-	const toolArgumentNames = getToolArgumentNames(tool);
-	const matchingHeaderArguments = Object.fromEntries(
-		Object.entries(headerArguments).filter(([key]) => toolArgumentNames.has(key)),
-	);
-	if (Object.keys(matchingHeaderArguments).length === 0) return args;
-
-	return { ...args, ...matchingHeaderArguments };
-}
-
 export class McpServer {
 	private static instance_: McpServer;
 
@@ -284,6 +63,9 @@ export class McpServer {
 	private resolveFunctions: Record<string, () => void> = {};
 	private pendingResponses: Record<string, PendingResponse> = {};
 	private logger: Logger;
+	private idleTtlMs: number;
+	private sweepIntervalMs: number;
+	private sweepTimer?: ReturnType<typeof setInterval>;
 
 	private constructor(logger: Logger) {
 		this.logger = logger;
@@ -291,12 +73,21 @@ export class McpServer {
 		this.transportFactory = new TransportFactory();
 		this.pendingCallsManager = new PendingCallsManager();
 		this.executionCoordinator = new ExecutionCoordinator();
+		this.idleTtlMs = readPositiveInteger(
+			'N8N_MCP_SERVER_SESSION_IDLE_TTL_MS',
+			DEFAULT_SESSION_IDLE_TTL_MS,
+		);
+		this.sweepIntervalMs = readPositiveInteger(
+			'N8N_MCP_SERVER_SESSION_SWEEP_INTERVAL_MS',
+			DEFAULT_SESSION_SWEEP_INTERVAL_MS,
+		);
 		this.logger.debug('McpServer created');
 	}
 
 	static instance(logger: Logger): McpServer {
 		if (!McpServer.instance_) {
 			McpServer.instance_ = new McpServer(logger);
+			McpServer.instance_.startSweep();
 			logger.debug('Created singleton McpServer');
 		}
 		return McpServer.instance_;
@@ -350,6 +141,8 @@ export class McpServer {
 		serverName?: string,
 	): Promise<HandlePostResult> {
 		const sessionId = this.getSessionId(req);
+		// A request on a known session counts as activity (no-op for unknown ids).
+		if (sessionId) this.sessionManager.touch(sessionId);
 		let transport = sessionId ? this.sessionManager.getTransport(sessionId) : undefined;
 		const rawBody = req.rawBody.toString();
 		let toolCallInfo = MessageParser.extractToolCallInfo(rawBody);
@@ -537,7 +330,10 @@ export class McpServer {
 						`SSE queue mode: sending response directly via transport for session ${sessionId}`,
 					);
 
-					const formattedResult = MessageFormatter.formatToolResult(result);
+					const formattedResult = MessageFormatter.formatToolResult(
+						result,
+						MessageFormatter.isErrorResult(result),
+					);
 					const response: JSONRPCMessage = {
 						jsonrpc: '2.0',
 						id: messageId,
@@ -578,6 +374,49 @@ export class McpServer {
 
 	setExecutionStrategy(strategy: ExecutionStrategy): void {
 		this.executionCoordinator.setStrategy(strategy);
+	}
+
+	private startSweep(): void {
+		if (this.sweepTimer) return;
+		this.sweepTimer = setInterval(() => {
+			void this.runSweep();
+		}, this.sweepIntervalMs);
+		this.sweepTimer.unref?.();
+	}
+
+	stopSweep(): void {
+		if (this.sweepTimer) {
+			clearInterval(this.sweepTimer);
+			this.sweepTimer = undefined;
+		}
+	}
+
+	private async runSweep(): Promise<void> {
+		for (const sessionId of this.sessionManager.getIdleSessions(this.idleTtlMs)) {
+			// SSE sessions are released reliably via the connection's close handler.
+			// Only Streamable HTTP sessions (stateless clients that never DELETE) leak.
+			if (this.sessionManager.getTransport(sessionId)?.transportType !== 'streamableHttp') continue;
+			// Don't evict a session whose tool call is still awaiting a result.
+			if (this.hasInFlightWork(sessionId)) continue;
+			try {
+				this.logger.debug(`Evicting idle MCP session ${sessionId}`);
+				await this.cleanupSession(sessionId);
+			} catch (error) {
+				this.logger.error(
+					`Failed to evict idle MCP session ${sessionId}: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+		}
+	}
+
+	private hasInFlightWork(sessionId: string): boolean {
+		if (this.pendingCallsManager.hasForSession(sessionId)) return true;
+		// Direct-mode tool calls are tracked only by resolveFunctions for their whole
+		// duration; queue-mode also uses pendingResponses below.
+		const ownsSession = (callId: string) =>
+			callId === sessionId || callId.startsWith(`${sessionId}_`);
+		if (Object.keys(this.resolveFunctions).some(ownsSession)) return true;
+		return Object.values(this.pendingResponses).some((pending) => pending.sessionId === sessionId);
 	}
 
 	isQueueMode(): boolean {
@@ -725,7 +564,10 @@ export class McpServer {
 						messageId: requestId,
 					});
 
-					return MessageFormatter.formatToolResult(result);
+					return MessageFormatter.formatToolResult(
+						result,
+						MessageFormatter.isErrorResult(result),
+					);
 				}
 
 				const result = await this.executionCoordinator.executeTool(requestedTool, toolArguments, {
@@ -739,7 +581,10 @@ export class McpServer {
 					this.logger.warn(`No resolve function found for ${callId}`);
 				}
 
-				return MessageFormatter.formatToolResult(result);
+				return MessageFormatter.formatToolResult(
+					result,
+					MessageFormatter.isErrorResult(result),
+				);
 			} catch (error) {
 				const errorObject = error instanceof Error ? error : new Error(String(error));
 				this.logger.error(`Error while executing Tool ${toolName}: ${errorObject.message}`, {
